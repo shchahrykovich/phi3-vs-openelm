@@ -1,59 +1,17 @@
-
-class OpenELMFeedForwardNetwork(nn.Module):
-    def __init__(self, config: OpenELMConfig, layer_idx: int) -> None:
+class Phi3MLP(nn.Module):
+    def __init__(self, config):
         super().__init__()
-        ffn_multiplier = config.ffn_multipliers[layer_idx]
-        intermediate_dim = int(
-            make_divisible(
-                ffn_multiplier * config.model_dim,
-                divisor=config.ffn_dim_divisor,
-            )
-        )
-        if config.ffn_with_glu:
-            # FFN with Gated linear unit, as described in https://arxiv.org/abs/2002.05202v1.
-            self.proj_1 = nn.Linear(
-                in_features=config.model_dim,
-                out_features=2 * intermediate_dim,
-                bias=False,
-            )
-            self.proj_2 = nn.Linear(
-                in_features=intermediate_dim,
-                out_features=config.model_dim,
-                bias=False,
-            )
-            self.ffn_with_glu = True
-        else:
-            # Standard FFN, as described in https://arxiv.org/abs/1706.03762
-            self.proj_1 = nn.Linear(
-                in_features=config.model_dim,
-                out_features=intermediate_dim,
-                bias=False,
-            )
-            self.proj_2 = nn.Linear(
-                in_features=intermediate_dim,
-                out_features=config.model_dim,
-                bias=False,
-            )
-            self.ffn_with_glu = False
 
-        self.act = ACT2FN[config.activation_fn_name]
+        self.config = config
+        self.gate_up_proj = nn.Linear(config.hidden_size, 2 * config.intermediate_size, bias=False)
+        self.down_proj = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
 
-    def extra_repr(self) -> str:
-        return super().extra_repr() + f"(ffn_with_glu) : {self.ffn_with_glu}"
+        self.activation_fn = ACT2FN[config.hidden_act]
 
-    def forward(self, x: Tensor) -> Tensor:
-        """Forward function of FFN layer.
+    def forward(self, hidden_states: torch.FloatTensor) -> torch.FloatTensor:
+        up_states = self.gate_up_proj(hidden_states)
 
-        Args:
-            x: Input tensor of the shape [batch size, sequence length, model dimension].
+        gate, up_states = up_states.chunk(2, dim=-1)
+        up_states = up_states * self.activation_fn(gate)
 
-        Returns:
-            A tensor of the same shape as the input.
-        """
-        if self.ffn_with_glu:
-            y_12 = self.proj_1(x)
-            y_1, y_2 = y_12.chunk(2, dim=-1)
-            y = self.act(y_1) * y_2
-            return self.proj_2(y)
-        else:
-            return self.proj_2(self.act(self.proj_1(x)))
+        return self.down_proj(up_states)
