@@ -1,14 +1,16 @@
-class OpenELMDecoderLayer(nn.Module):
-    def __init__(self, config: OpenELMConfig, layer_idx: int) -> None:
+class Phi3DecoderLayer(nn.Module):
+    def __init__(self, config: Phi3Config, layer_idx: int):
         super().__init__()
-        self.attn = OpenELMMultiHeadCausalAttention(config=config, layer_idx=layer_idx)
-        self.ffn = OpenELMFeedForwardNetwork(config=config, layer_idx=layer_idx)
-        self.ffn_norm = OpenELMRMSNorm(
-            num_features=config.model_dim,
-        )
-        self.attn_norm = OpenELMRMSNorm(
-            num_features=config.model_dim,
-        )
+
+        self.config = config
+        self.self_attn = PHI3_ATTENTION_CLASSES[config._attn_implementation](config, layer_idx=layer_idx)
+
+        self.mlp = Phi3MLP(config)
+        self.input_layernorm = Phi3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+
+        self.resid_attn_dropout = nn.Dropout(config.resid_pdrop)
+        self.resid_mlp_dropout = nn.Dropout(config.resid_pdrop)
+        self.post_attention_layernorm = Phi3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(
         self,
@@ -18,17 +20,21 @@ class OpenELMDecoderLayer(nn.Module):
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
-        cache_position: Optional[torch.LongTensor] = None,
         **kwargs,
-    ) -> Tuple[
-        torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]
-    ]:
+    ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
+        if "padding_mask" in kwargs:
+            warnings.warn(
+                "Passing `padding_mask` is deprecated and will be removed in v4.37. Please make sure use `attention_mask` instead.`"
+            )
         """
         Args:
-            hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
-            attention_mask (`torch.FloatTensor`, *optional*):
-                attention mask of size `(batch_size, sequence_length)` if flash attention is used or `(batch_size, 1,
-                query_sequence_length, key_sequence_length)` if default attention is used.
+            hidden_states (`torch.FloatTensor`):
+                input to the layer of shape `(batch, seq_len, embed_dim)`
+            attention_mask (`torch.FloatTensor`, *optional*): attention mask of size
+                `(batch, 1, tgt_len, src_len)` where padding elements are indicated by very large negative values.
+            position_ids (`torch.LongTensor` of shape `({0})`, *optional*):
+                Indices of positions of each input sequence tokens in the position embeddings. Selected in the range
+                `[0, config.n_positions - 1]`. [What are position IDs?](../glossary#position-ids)
             output_attentions (`bool`, *optional*):
                 Whether or not to return the attentions tensors of all attention layers. See `attentions` under
                 returned tensors for more detail.
@@ -37,26 +43,27 @@ class OpenELMDecoderLayer(nn.Module):
                 (see `past_key_values`).
             past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
         """
+
         residual = hidden_states
-        hidden_states = self.attn_norm(hidden_states)
+
+        hidden_states = self.input_layernorm(hidden_states)
 
         # Self Attention
-        hidden_states, self_attn_weights, present_key_value = self.attn(
+        attn_outputs, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
+            position_ids=position_ids,
             past_key_value=past_key_value,
             output_attentions=output_attentions,
             use_cache=use_cache,
-            cache_position=cache_position,
-            **kwargs,
         )
-        hidden_states = residual + hidden_states
 
-        # Fully Connected
+        hidden_states = residual + self.resid_attn_dropout(attn_outputs)
+
         residual = hidden_states
-        hidden_states = self.ffn_norm(hidden_states)
-        hidden_states = self.ffn(hidden_states)
-        hidden_states = residual + hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = residual + self.resid_mlp_dropout(hidden_states)
 
         outputs = (hidden_states,)
 

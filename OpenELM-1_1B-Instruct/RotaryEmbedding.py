@@ -1,154 +1,146 @@
-def _rotate_half(x: Tensor) -> Tensor:
-    x1, x2 = x.chunk(2, dim=-1)
+# Copied from transformers.models.llama.modeling_llama.rotate_half
+def rotate_half(x):
+    """Rotates half the hidden dims of the input."""
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
     return torch.cat((-x2, x1), dim=-1)
 
 
-def _apply_rotary_pos_emb(x: Tensor, pos_sin: Tensor, pos_cos: Tensor) -> Tensor:
-    return (x * pos_cos) + (_rotate_half(x) * pos_sin)
-
-
-class OpenELMRotaryEmbedding(torch.nn.Module):
-    """
-    The rotary position embeddings (aka RoPE) from `RoFormer <https://arxiv.org/abs/2104.09864>`_.
-
-    RoPE encodes the position information of tokens using a rotation matrix, and is able to capture
-    explicit relative positional dependencies.
+# Copied from transformers.models.llama.modeling_llama.apply_rotary_pos_emb
+def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+    """Applies Rotary Position Embedding to the query and key tensors.
 
     Args:
-        model_dim: The dimensionality of the model's hidden state.
-        max_seq_length: Maximum sequence length.
-        freq_constant: A constant used for computing frequencies.
+        q (`torch.Tensor`): The query tensor.
+        k (`torch.Tensor`): The key tensor.
+        cos (`torch.Tensor`): The cosine part of the rotary embedding.
+        sin (`torch.Tensor`): The sine part of the rotary embedding.
+        position_ids (`torch.Tensor`, *optional*):
+            Deprecated and unused.
+        unsqueeze_dim (`int`, *optional*, defaults to 1):
+            The 'unsqueeze_dim' argument specifies the dimension along which to unsqueeze cos[position_ids] and
+            sin[position_ids] so that they can be properly broadcasted to the dimensions of q and k. For example, note
+            that cos[position_ids] and sin[position_ids] have the shape [batch_size, seq_len, head_dim]. Then, if q and
+            k have the shape [batch_size, heads, seq_len, head_dim], then setting unsqueeze_dim=1 makes
+            cos[position_ids] and sin[position_ids] broadcastable to the shapes of q and k. Similarly, if q and k have
+            the shape [batch_size, seq_len, heads, head_dim], then set unsqueeze_dim=2.
+    Returns:
+        `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
     """
+    cos = cos.unsqueeze(unsqueeze_dim)
+    sin = sin.unsqueeze(unsqueeze_dim)
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = (k * cos) + (rotate_half(k) * sin)
+    return q_embed, k_embed
 
-    def __init__(
-        self, model_dim: int, max_seq_length: int, freq_constant: int = 10000
-    ) -> None:
-        inv_freq = 1.0 / (
-            freq_constant
-            ** (torch.arange(0, model_dim, 2, dtype=torch.float32) / model_dim)
-        )
+# Copied from transformers.models.gemma.modeling_gemma.GemmaRotaryEmbedding with gemma->phi3, Gemma->Phi3
+class Phi3RotaryEmbedding(nn.Module):
+    def __init__(self, dim, max_position_embeddings=2048, base=10000, device=None):
         super().__init__()
 
-        self.model_dim = model_dim
-        self.freq_constant = freq_constant
-        self.max_seq_length = max_seq_length
+        self.dim = dim
+        self.max_position_embeddings = max_position_embeddings
+        self.base = base
+        self.register_buffer("inv_freq", None, persistent=False)
 
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
-        self._cached_cos = None
-        self._cached_sin = None
-        self._cached_seq_length = max_seq_length
-        self._compute_sin_cos_embeddings(max_seq_length)
-
-    def extra_repr(self) -> str:
-        return f"\tmodel_dim={self.model_dim}, max_seq_length={self.max_seq_length}, freq_constant={self.freq_constant}"
-
-    def _compute_sin_cos_embeddings(
-        self,
-        key_len: int,
-        key_device: torch.device = torch.device("cpu"),
-        key_dtype: torch.dtype = torch.float32,
-    ) -> None:
-        """
-        Compute sine and cos embeddings.
-
-        Args:
-            key_len: Number of tokens in the key embeddings in the transformer model.
-            device: Device where the key embeddings are stored.
-            key_dtype: Data type of the key embeddings.
-
-        Returns:
-            None
-
-        ...note:
-            We recalculate the sine and cosine embeddings if any of the following conditions are met:
-                1. The number of tokens in key embeddings are greater than the cached sequence length.
-                2. Sine and cosine caches are empty.
-                3. The device and data type of sine and cosine embeddings does not match with the key embeddings.
-        """
-        if (
-            key_len > self._cached_seq_length
-            or self._cached_cos is None
-            or (self._cached_cos is not None and self._cached_cos.device != key_device)
-            or (self._cached_cos is not None and self._cached_cos.dtype != key_dtype)
-            or self._cached_sin is None
-            or (self._cached_sin is not None and self._cached_sin.device != key_device)
-            or (self._cached_sin is not None and self._cached_sin.dtype != key_dtype)
-        ):
-            self._cached_seq_length = max(key_len, self._cached_seq_length)
-
-            # The shape of 'pos_index' is [number of key tokens]
-            pos_index = torch.arange(
-                self._cached_seq_length,
-                dtype=torch.float32,
-                device=self.inv_freq.device,
+    @torch.no_grad()
+    def forward(self, x, position_ids, seq_len=None):
+        # x: [bs, num_attention_heads, seq_len, head_size]
+        if self.inv_freq is None:
+            self.inv_freq = 1.0 / (
+                self.base ** (torch.arange(0, self.dim, 2, dtype=torch.int64, device=x.device).float() / self.dim)
             )
-            # The shape of 'pos_index_theta' is [number of key tokens, model dimension]
-            pos_index_theta = torch.einsum("i,j->ij", pos_index, self.inv_freq)
-            # The shape of 'emb' is [number of key tokens, model dimension]
-            emb = torch.cat((pos_index_theta, pos_index_theta), dim=-1)
+        inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
+        position_ids_expanded = position_ids[:, None, :].float()
+        # Force float32 since bfloat16 loses precision on long contexts
+        # See https://github.com/huggingface/transformers/pull/29285
+        device_type = x.device.type
+        device_type = device_type if isinstance(device_type, str) and device_type != "mps" else "cpu"
+        with torch.autocast(device_type=device_type, enabled=False):
+            freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
+            emb = torch.cat((freqs, freqs), dim=-1)
+            cos = emb.cos()
+            sin = emb.sin()
+        return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
-            # the shape of cos and sin embeddings is [number of key tokens, model_dim]
-            cos_emb = emb.cos().to(dtype=key_dtype, device=key_device)
-            sin_emb = emb.sin().to(dtype=key_dtype, device=key_device)
 
-            # the shape of cached cos and sin embeddings is [1, 1, number of key tokens, model_dim]
-            self._cached_cos = cos_emb[None, None, :, :]
-            self._cached_sin = sin_emb[None, None, :, :]
+class Phi3SuScaledRotaryEmbedding(Phi3RotaryEmbedding):
+    def __init__(self, dim, config, device=None):
+        super().__init__(dim, config.max_position_embeddings, config.rope_theta, device)
 
-    def forward(
-        self,
-        query: torch.Tensor,
-        key: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        The forward function of RoPE embeddings.
+        self.short_factor = config.rope_scaling["short_factor"]
+        self.long_factor = config.rope_scaling["long_factor"]
+        self.original_max_position_embeddings = config.original_max_position_embeddings
 
-        Args:
-            query: Query embeddings in the transformer model. The shape of query embeddings is
-                [Batch, number of query heads, number of query tokens, model dimension].
-            key: Key embeddings in the transformer model. The shape of key embeddings is
-                [Batch, number of key heads, number of key tokens, model dimension].
+    @torch.no_grad()
+    def forward(self, x, position_ids, seq_len=None):
+        seq_len = torch.max(position_ids) + 1
+        if seq_len > self.original_max_position_embeddings:
+            ext_factors = torch.tensor(self.long_factor, dtype=torch.float32, device=x.device)
+        else:
+            ext_factors = torch.tensor(self.short_factor, dtype=torch.float32, device=x.device)
 
-        Returns:
-            A tuple containing the query and key embeddings with positional information. The shape of the returned query
-            and key embeddings is the same as the input query and key embeddings respectively.
+        inv_freq_shape = torch.arange(0, self.dim, 2, dtype=torch.int64, device=x.device).float() / self.dim
+        self.inv_freq = 1.0 / (ext_factors * self.base**inv_freq_shape)
 
-        ...note:
-            The RoPE embedding computation is done in full-precision. After the computation, input query and key tensors
-            are casted to original input datatype.
-        """
-        dim = key.shape[-1]
-        key_len = key.shape[2]
-        query_len = query.shape[2]
+        inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
+        position_ids_expanded = position_ids[:, None, :].float()
 
-        assert dim == self.model_dim
-        assert key.device == query.device
-        assert key.dtype == query.dtype
+        # Force float32 since bfloat16 loses precision on long contexts
+        # See https://github.com/huggingface/transformers/pull/29285
+        device_type = x.device.type
+        device_type = device_type if isinstance(device_type, str) and device_type != "mps" else "cpu"
+        with torch.autocast(device_type=device_type, enabled=False):
+            freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
+            emb = torch.cat((freqs, freqs), dim=-1)
 
-        # In the context of self-attention, the lengths of keys and queries are equal.
-        # However, in generation tasks, such as predicting the next token in a sequence, the lengths of keys and queries
-        # can differ. For instance, when employing key-value (KV) caching for sequence prediction, the keys
-        # represent embeddings of previous tokens and the current token, while the query corresponds
-        # to the embedding of the current token only.
-        assert (
-            key_len >= query_len
-        ), "Number of keys has to be greater than or equal to number of queries."
+            scale = self.max_position_embeddings / self.original_max_position_embeddings
+            if scale <= 1.0:
+                scaling_factor = 1.0
+            else:
+                scaling_factor = math.sqrt(1 + math.log(scale) / math.log(self.original_max_position_embeddings))
 
-        query_float = query.float()
-        key_float = key.float()
+            cos = emb.cos() * scaling_factor
+            sin = emb.sin() * scaling_factor
+        return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
-        self._compute_sin_cos_embeddings(
-            key_len, key_device=key_float.device, key_dtype=key_float.dtype
-        )
-        query_float = _apply_rotary_pos_emb(
-            x=query_float,
-            pos_sin=self._cached_sin[..., key_len - query_len : key_len, :],
-            pos_cos=self._cached_cos[..., key_len - query_len : key_len, :],
-        )
-        key_float = _apply_rotary_pos_emb(
-            x=key_float,
-            pos_sin=self._cached_sin[..., :key_len, :],
-            pos_cos=self._cached_cos[..., :key_len, :],
-        )
 
-        return query_float.type_as(query), key_float.type_as(key)
+class Phi3YarnScaledRotaryEmbedding(Phi3RotaryEmbedding):
+    def __init__(self, dim, config, device=None):
+        super().__init__(dim, config.max_position_embeddings, config.rope_theta, device)
+
+        self.short_factor = config.rope_scaling["short_factor"]
+        self.long_factor = config.rope_scaling["long_factor"]
+        self.original_max_position_embeddings = config.original_max_position_embeddings
+
+    @torch.no_grad()
+    def forward(self, x, position_ids, seq_len=None):
+        seq_len = torch.max(position_ids) + 1
+        if seq_len > self.original_max_position_embeddings:
+            ext_factors = torch.tensor(self.long_factor, dtype=torch.float32, device=x.device)
+        else:
+            ext_factors = torch.tensor(self.short_factor, dtype=torch.float32, device=x.device)
+
+        inv_freq_shape = torch.arange(0, self.dim, 2, dtype=torch.int64, device=x.device).float() / self.dim
+        self.inv_freq = 1.0 / (ext_factors * self.base**inv_freq_shape)
+
+        inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
+        position_ids_expanded = position_ids[:, None, :].float()
+
+        # Force float32 since bfloat16 loses precision on long contexts
+        # See https://github.com/huggingface/transformers/pull/29285
+        device_type = x.device.type
+        device_type = device_type if isinstance(device_type, str) and device_type != "mps" else "cpu"
+        with torch.autocast(device_type=device_type, enabled=False):
+            freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
+            emb = torch.cat((freqs, freqs), dim=-1)
+
+            scale = self.max_position_embeddings / self.original_max_position_embeddings
+            if scale <= 1.0:
+                scaling_factor = 1.0
+            else:
+                scaling_factor = 0.1 * math.log(scale) + 1.0
+
+            cos = emb.cos() * scaling_factor
+            sin = emb.sin() * scaling_factor
+        return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
