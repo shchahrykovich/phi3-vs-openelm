@@ -1,318 +1,213 @@
+# coding=utf-8
+# Copyright 2024 Microsoft and the HuggingFace Inc. team. All rights reserved.
 #
-# For licensing see accompanying LICENSE file.
-# Copyright (C) 2024 Apple Inc. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-"""Implements HF OpenELMConfig based on PretrainedConfig"""
-from numbers import Number
-from typing import List, Optional, Union
-
-import numpy as np
-from transformers import PretrainedConfig
-
-
-def make_divisible(
-    v: Union[float, int],
-    divisor: Optional[int] = 8,
-    min_value: Optional[Union[float, int]] = None,
-) -> Union[float, int]:
-    """
-    This function is taken from the original tf repo.
-    It ensures that all layers have a channel number that is divisible by the divisor
-    It can be seen at:
-    https://github.com/tensorflow/models/blob/2cfc99eff5e5eb729c6793d2f3d03aa1c9be2b15/research/slim/nets/mobilenet/mobilenet.py#L62
-
-    Args:
-        v: input value
-        divisor: default to 8
-        min_value: minimum divisor value
-    Returns:
-        new_v: new divisible value
-    """
-    if min_value is None:
-        min_value = divisor
-    new_v = max(min_value, int(v + divisor / 2) // divisor * divisor)
-    # Make sure that round down does not go down by more than 10%.
-    if new_v < 0.9 * v:
-        new_v += divisor
-    return new_v
+""" Phi-3 model configuration"""
 
 
-def compute_heads(model_dim: int, head_dim: int) -> int:
-    """Compute the number of heads.
-
-    Args:
-        model_dim: Model dimension.
-        head_dim: Head dimension.
-
-    Returns:
-        An integer denoting number of heads in multi-head attention is returned.
-
-    Raises:
-        ValueError: if model dimension is not divisible by head dimension.
-    """
-    if model_dim % head_dim == 0:
-        return model_dim // head_dim
-    else:
-        raise ValueError(
-            f"Model dimension should be divisible by head dimension. Got: {model_dim} and {head_dim}."
-        )
+from transformers.configuration_utils import PretrainedConfig
+from transformers.utils import logging
 
 
-OpenELM_CONFIGS = {
-    "OpenELM-270M": dict(
-        num_transformer_layers=16,
-        model_dim=1280,
-        head_dim=64,
-        num_gqa_groups=4,
-        normalize_qk_projections=True,
-        share_input_output_layers=True,
-        # Vary the FFN and QKV multipliers to create variable FFN and attention layers respectively.
-        ffn_multipliers=(0.5, 4.0),
-        qkv_multipliers=(0.5, 1.0),
-    ),
-    "OpenELM-450M": dict(
-        num_transformer_layers=20,
-        model_dim=1536,
-        head_dim=64,
-        num_gqa_groups=4,
-        normalize_qk_projections=True,
-        share_input_output_layers=True,
-        # Vary the FFN and QKV multipliers to create variable FFN and attention layers respectively.
-        ffn_multipliers=(0.5, 4.0),
-        qkv_multipliers=(0.5, 1.0),
-    ),
-    "OpenELM-1_1B": dict(
-        num_transformer_layers=28,
-        model_dim=2048,
-        head_dim=64,
-        num_gqa_groups=4,
-        normalize_qk_projections=True,
-        share_input_output_layers=True,
-        # Vary the FFN and QKV multipliers to create variable FFN and attention layers respectively.
-        ffn_multipliers=(0.5, 4.0),
-        qkv_multipliers=(0.5, 1.0),
-    ),
-    "OpenELM-3B": dict(
-        num_transformer_layers=36,
-        model_dim=3072,
-        head_dim=128,
-        num_gqa_groups=4,
-        normalize_qk_projections=True,
-        share_input_output_layers=True,
-        # Vary the FFN and QKV multipliers to create variable FFN and attention layers respectively.
-        ffn_multipliers=(0.5, 4.0),
-        qkv_multipliers=(0.5, 1.0),
-    ),
+logger = logging.get_logger(__name__)
+
+PHI3_PRETRAINED_CONFIG_ARCHIVE_MAP = {
+    "microsoft/Phi-3-mini-4k-instruct": "https://huggingface.co/microsoft/Phi-3-mini-4k-instruct/resolve/main/config.json",
+    "microsoft/Phi-3-mini-128k-instruct": "https://huggingface.co/microsoft/Phi-3-mini-128k-instruct/resolve/main/config.json",
 }
 
 
-class OpenELMConfig(PretrainedConfig):
+class Phi3Config(PretrainedConfig):
     r"""
-    This is the configuration class to store the configuration of a [`OpenELMModel`]. It is used to instantiate an OpenELM model according to the specified arguments, defining the model architecture.
+    This is the configuration class to store the configuration of a [`Phi3Model`]. It is used to instantiate a Phi-3
+    model according to the specified arguments, defining the model architecture. Instantiating a configuration with the
+    defaults will yield a similar configuration to that of the
+    [microsoft/Phi-3-mini-4k-instruct](https://huggingface.co/microsoft/Phi-3-mini-4k-instruct).
 
     Configuration objects inherit from [`PretrainedConfig`] and can be used to control the model outputs. Read the
     documentation from [`PretrainedConfig`] for more information.
 
     Args:
-        vocab_size (`int`, *optional*, defaults to 32000):
-            Vocabulary size of the OpenELM model.
-        max_context_length (`int`, *optional*, defaults to 2048):
-            Maximum number of input tokens.
-        num_transformer_layers (`int`, *optional*, defaults to 12):
-            Number of hidden layers in the Transformer decoder.
-        model_dim (`int`, *optional*, defaults to 2048):
+        vocab_size (`int`, *optional*, defaults to 32064):
+            Vocabulary size of the Phi-3 model. Defines the number of different tokens that can be represented by the
+            `inputs_ids` passed when calling [`Phi3Model`].
+        hidden_size (`int`, *optional*, defaults to 3072):
             Dimension of the hidden representations.
-        head_dim (`int`, *optional*, defaults to 128):
-            The attention head dimension.
-        qkv_multipliers (`Union[Number, List[Number]]`, *optional*, defaults to 1.0):
-            If the qkv_multipliers is a Number, then all attention layers have the same latent dimensions,
-            resulting in uniform allocation of parameters.
-            If the qkv_multipliers is a List of Number, then each attention layer have different latent dimensions
-            assuming qkv_multipliers[0] != qkv_multipliers[1]. This results in variable allocation of parameters in attention layer.
-            This scaling is known as layer-wise or block-wise scaling: https://arxiv.org/abs/2008.00623
-        num_query_heads (`Union[int, None]`, *optional*, defaults to None):
-            The number of query heads, computed from `compute_heads(model_dim=model_dim, head_dim=head_dim)`.
-        num_gqa_groups (`int`, *optional*, defaults to 1):
-            This variable allows to switch between multi-head attention, group query attention, and multi-query attention.
-            When num_gqa_groups == 1, then it is multi-head attention.
-            When 1 < num_gqa_groups < num_heads and num_heads is divisible by num_gqa_groups, then it is group query attention
-            When num_gqa_groups == num_heads, then it is multi-query attention
-        ffn_multipliers (`Union[Number, List[Number]]`, *optional*, defaults to 4.0):
-            Feed-forward network (FFN) multipliers.
-            If the ffn_multipliers is a Number, then all FFN layers have the same latent dimensions,
-            resulting in uniform allocation of parameters.
-            If the ffn_multipliers is a List of Number, then each FFN layer have different latent dimensions
-            assuming ffn_multipliers[0] != ffn_multipliers[1]. This results in variable allocation of parameters in FFN layer.
-            This scaling is known as layer-wise or block-wise scaling: https://arxiv.org/abs/2008.00623
-        ffn_with_glu (`bool`, *optional*, defaults to True):
-            Whether to use FFN with Gated Linear Unit (GLU)
-        ffn_dim_divisor (`int`, *optional*, defaults to 256):
-            The ffn layer dimension divisor.
-        activation_fn_name (`str` or `function`, *optional*, defaults to `"swish"`):
+        intermediate_size (`int`, *optional*, defaults to 8192):
+            Dimension of the MLP representations.
+        num_hidden_layers (`int`, *optional*, defaults to 32):
+            Number of hidden layers in the Transformer decoder.
+        num_attention_heads (`int`, *optional*, defaults to 32):
+            Number of attention heads for each attention layer in the Transformer decoder.
+        num_key_value_heads (`int`, *optional*):
+            This is the number of key_value heads that should be used to implement Grouped Query Attention. If
+            `num_key_value_heads=num_attention_heads`, the model will use Multi Head Attention (MHA), if
+            `num_key_value_heads=1 the model will use Multi Query Attention (MQA) otherwise GQA is used. When
+            converting a multi-head checkpoint to a GQA checkpoint, each group key and value head should be constructed
+            by meanpooling all the original heads within that group. For more details checkout [this
+            paper](https://arxiv.org/pdf/2305.13245.pdf). If it is not specified, will default to
+            `num_attention_heads`.
+        resid_pdrop (`float`, *optional*, defaults to 0.0):
+            Dropout probability for mlp outputs.
+        embd_pdrop (`int`, *optional*, defaults to 0.0):
+            The dropout ratio for the embeddings.
+        attention_dropout (`float`, *optional*, defaults to 0.0):
+            The dropout ratio after computing the attention scores.
+        hidden_act (`str` or `function`, *optional*, defaults to `"silu"`):
             The non-linear activation function (function or string) in the decoder.
-        normalization_layer_name (`str` or `function`, *optional*, defaults to `"rms_norm"`):
-            Type of normalization layer.
-        normalize_qk_projections (`bool`, *optional*, defaults to False):
-            Whether to normalize queries and keys after projections
-        share_input_output_layers (`bool`, *optional*, defaults to False):
-            Whether to share the embedding between input and output linear layer
-        rope_freq_constant (`int`, *optional*, defaults to 10000):
-            The base period of the RoPE embeddings.
-        rope_max_length (`int`, *optional*, defaults to 4096):
-            That rope_max_length is set to twice of max_context_length.
-            This allows flexibility in token lengths during training or fine-tuning.
+        max_position_embeddings (`int`, *optional*, defaults to 4096):
+            The maximum sequence length that this model might ever be used with.
+        original_max_position_embeddings (`int`, *optional*, defaults to 4096):
+            The maximum sequence length that this model was trained with. This is used to determine the size of the
+            original RoPE embeddings when using long scaling.
         initializer_range (`float`, *optional*, defaults to 0.02):
             The standard deviation of the truncated_normal_initializer for initializing all weight matrices.
+        rms_norm_eps (`float`, *optional*, defaults to 1e-05):
+            The epsilon value used for the RMSNorm.
         use_cache (`bool`, *optional*, defaults to `True`):
             Whether or not the model should return the last key/values attentions (not used by all models). Only
-            relevant if `config.is_decoder=True`.
-        bos_token_id (`int`, *optional*, defaults to 2):
-            Beginning of stream token id.
-        eos_token_id (`int`, *optional*, defaults to 1):
-            End of stream token id.
-    """
+            relevant if `config.is_decoder=True`. Whether to tie weight embeddings or not.
+        tie_word_embeddings (`bool`, *optional*, defaults to `False`):
+            Whether to tie weight embeddings
+        rope_theta (`float`, *optional*, defaults to 10000.0):
+            The base period of the RoPE embeddings.
+        rope_scaling (`dict`, *optional*):
+            The scaling strategy for the RoPE embeddings. If `None`, no scaling is applied. If a dictionary, it must
+            contain the following keys: `type`, `short_factor` and `long_factor`. The `type` must be either `su` or `yarn` and
+            the `short_factor` and `long_factor` must be lists of numbers with the same length as the hidden size
+            divided by the number of attention heads divided by 2.
+        bos_token_id (`int`, *optional*, defaults to 1):
+            The id of the "beginning-of-sequence" token.
+        eos_token_id (`int`, *optional*, defaults to 32000):
+            The id of the "end-of-sequence" token.
+        pad_token_id (`int`, *optional*, defaults to 32000):
+            The id of the padding token.
+        sliding_window (`int`, *optional*):
+            Sliding window attention window size. If `None`, no sliding window is applied.
 
-    model_type = "openelm"
+    Example:
+
+    ```python
+    >>> from transformers import Phi3Model, Phi3Config
+
+    >>> # Initializing a Phi-3 style configuration
+    >>> configuration = Phi3Config.from_pretrained("microsoft/Phi-3-mini-4k-instruct")
+
+    >>> # Initializing a model from the configuration
+    >>> model = Phi3Model(configuration)
+
+    >>> # Accessing the model configuration
+    >>> configuration = model.config
+    ```"""
+
+    model_type = "phi3"
+    keys_to_ignore_at_inference = ["past_key_values"]
 
     def __init__(
         self,
-        vocab_size: int = 32000,
-        max_context_length: int = 2048,
-        num_transformer_layers: int = 12,
-        model_dim: int = 2048,
-        head_dim: int = 128,
-        qkv_multipliers: Union[Number, List[Number]] = 1.0,
-        num_query_heads: Union[int, None] = None,
-        num_gqa_groups: int = 1,
-        ffn_multipliers: Union[Number, List[Number]] = 4.0,
-        ffn_with_glu: bool = True,
-        ffn_dim_divisor: int = 256,
-        activation_fn_name: str = "swish",
-        normalization_layer_name: str = "rms_norm",
-        normalize_qk_projections: bool = False,
-        share_input_output_layers: bool = False,
-        rope_freq_constant: int = 10000,
-        rope_max_length: int = 4096,
-        initializer_range: float = 0.02,
-        use_cache: bool = True,
-        bos_token_id: int = 1,
-        eos_token_id: int = 2,
+        vocab_size=32064,
+        hidden_size=3072,
+        intermediate_size=8192,
+        num_hidden_layers=32,
+        num_attention_heads=32,
+        num_key_value_heads=None,
+        resid_pdrop=0.0,
+        embd_pdrop=0.0,
+        attention_dropout=0.0,
+        hidden_act="silu",
+        max_position_embeddings=4096,
+        original_max_position_embeddings=4096,
+        initializer_range=0.02,
+        rms_norm_eps=1e-5,
+        use_cache=True,
+        tie_word_embeddings=False,
+        rope_theta=10000.0,
+        rope_scaling=None,
+        bos_token_id=1,
+        eos_token_id=32000,
+        pad_token_id=32000,
+        sliding_window=None,
         **kwargs,
-    ) -> None:
+    ):
         self.vocab_size = vocab_size
-        self.max_context_length = max_context_length
-        self.num_transformer_layers = num_transformer_layers
-        self.model_dim = model_dim
-        self.head_dim = head_dim
-        self.qkv_multipliers = qkv_multipliers
-        self.num_query_heads = num_query_heads
-        self.num_gqa_groups = num_gqa_groups
-        self.ffn_multipliers = ffn_multipliers
-        self.ffn_with_glu = ffn_with_glu
-        self.ffn_dim_divisor = ffn_dim_divisor
-        self.activation_fn_name = activation_fn_name
-        self.normalization_layer_name = normalization_layer_name
-        self.normalize_qk_projections = normalize_qk_projections
-        self.share_input_output_layers = share_input_output_layers
-        self.rope_freq_constant = rope_freq_constant
-        self.rope_max_length = rope_max_length
-        self.num_query_heads = (
-            compute_heads(model_dim=model_dim, head_dim=head_dim)
-            if num_query_heads is None
-            else num_query_heads
-        )
-        self.initializer_range = initializer_range
+        self.hidden_size = hidden_size
+        self.intermediate_size = intermediate_size
+        self.num_hidden_layers = num_hidden_layers
+        self.num_attention_heads = num_attention_heads
 
-        self.__post_init__()
+        if num_key_value_heads is None:
+            num_key_value_heads = num_attention_heads
+
+        self.num_key_value_heads = num_key_value_heads
+        self.resid_pdrop = resid_pdrop
+        self.embd_pdrop = embd_pdrop
+        self.attention_dropout = attention_dropout
+        self.hidden_act = hidden_act
+        self.max_position_embeddings = max_position_embeddings
+        self.original_max_position_embeddings = original_max_position_embeddings
+        self.initializer_range = initializer_range
+        self.rms_norm_eps = rms_norm_eps
+        self.use_cache = use_cache
+        self.rope_theta = rope_theta
+        self.rope_scaling = rope_scaling
+        self._rope_scaling_validation()
+        self.sliding_window = sliding_window
+
         super().__init__(
-            use_cache=use_cache,
             bos_token_id=bos_token_id,
             eos_token_id=eos_token_id,
+            pad_token_id=pad_token_id,
+            tie_word_embeddings=tie_word_embeddings,
             **kwargs,
         )
 
-    def __post_init__(self) -> None:
-        if self.num_gqa_groups is not None:
-            head_multiple_of = self.num_gqa_groups
-        else:
-            head_multiple_of = 2
+    def _rope_scaling_validation(self):
+        """
+        Validate the `rope_scaling` configuration.
+        """
+        if self.rope_scaling is None:
+            return
 
-        if isinstance(self.qkv_multipliers, Number):
-            # All attention layers have the same latent dimensions, resulting in uniform allocation of parameters.
-            qkv_dim = make_divisible(
-                self.model_dim * self.qkv_multipliers,
-                divisor=self.head_dim * head_multiple_of,
+        if not isinstance(self.rope_scaling, dict) or len(self.rope_scaling) != 3:
+            raise ValueError(
+                "`rope_scaling` must be a dictionary with three fields, `type`, `short_factor` and `long_factor`, "
+                f"got {self.rope_scaling}"
             )
-            query_dims = [int(qkv_dim)] * self.num_transformer_layers
-
-        elif (
-            isinstance(self.qkv_multipliers, (tuple, list))
-            and len(self.qkv_multipliers) == 2
+        rope_scaling_type = self.rope_scaling.get("type", None)
+        rope_scaling_short_factor = self.rope_scaling.get("short_factor", None)
+        rope_scaling_long_factor = self.rope_scaling.get("long_factor", None)
+        if rope_scaling_type is None or rope_scaling_type not in ["su", "yarn"]:
+            raise ValueError(f"`rope_scaling`'s type field must be one of ['su', 'yarn'], got {rope_scaling_type}")
+        if not (
+            isinstance(rope_scaling_short_factor, list)
+            and all(isinstance(x, (int, float)) for x in rope_scaling_short_factor)
         ):
-            # Each attention layer have different latent dimensions assuming qkv_multipliers[0] != qkv_multipliers[1].
-            # This results in variable allocation of parameters in attention layer.
-            # This scaling is known as layer-wise or block-wise scaling: https://arxiv.org/abs/2008.00623
-            qkv_multipliers = [
-                round(v, 2)
-                for v in np.linspace(
-                    self.qkv_multipliers[0],
-                    self.qkv_multipliers[1],
-                    num=self.num_transformer_layers,
-                    dtype=float,
-                )
-            ]
-            # Make sure that scaled model dimension is divisible by scaled head dimension.
-            query_dims = [
-                int(
-                    make_divisible(
-                        self.model_dim * m, divisor=self.head_dim * head_multiple_of
-                    )
-                )
-                for m in qkv_multipliers
-            ]
-        else:
-            raise NotImplementedError(
-                f"QKV multipliers should be a single number or a list containing exactly two numbers. Got: {qkv_multipliers}."
+            raise ValueError(
+                f"`rope_scaling`'s short_factor field must be a list of numbers, got {rope_scaling_short_factor}"
             )
-
-        # compute the number of query, key, and value heads
-        # For multi-head and multi-query attention, the number of heads for query, key, and value are the same.
-        # For group query attention, the number of key and value heads are the same.
-        self.num_query_heads = [
-            int(compute_heads(q_dim, self.head_dim)) for q_dim in query_dims
-        ]
-        self.num_kv_heads = [
-            q_heads // self.num_gqa_groups for q_heads in self.num_query_heads
-        ]
-
-        # Feed-forward network (FFN) multipliers
-        if isinstance(self.ffn_multipliers, Number):
-            # All FFN layers have the same latent dimensions, resulting in uniform allocation of parameters.
-            self.ffn_multipliers = [self.ffn_multipliers] * self.num_transformer_layers
-        elif isinstance(self.ffn_multipliers, (tuple, list)):
-            # Each FFN layer have different latent dimensions assuming ffn_multipliers[0] != ffn_multipliers[1].
-            # This results in variable allocation of parameters in FFN layer.
-            # This scaling is known as layer-wise or block-wise scaling: https://arxiv.org/abs/2008.00623
-            if len(self.ffn_multipliers) == 2:
-                self.ffn_multipliers = [
-                    round(v, 2)
-                    for v in np.linspace(
-                        self.ffn_multipliers[0],
-                        self.ffn_multipliers[1],
-                        num=self.num_transformer_layers,
-                        dtype=float,
-                    )
-                ]
-            else:
-                assert (
-                    len(self.ffn_multipliers) == self.num_transformer_layers
-                ), f"{len(self.ffn_multipliers)=}!={self.num_transformer_layers=}"
-        else:
-            raise NotImplementedError(
-                f"FFN multipliers should be a single number or a list containing exactly two numbers. Got: {qkv_multipliers}."
+        if not len(rope_scaling_short_factor) == self.hidden_size // self.num_attention_heads // 2:
+            raise ValueError(
+                f"`rope_scaling`'s short_factor field must have length {self.hidden_size // self.num_attention_heads // 2}, got {len(rope_scaling_short_factor)}"
             )
-
-        # check num_query_heads divisible by num_kv_heads for every layer
-        for layer_idx in range(len(query_dims)):
-            assert self.num_query_heads[layer_idx] % self.num_kv_heads[layer_idx] == 0
+        if not (
+            isinstance(rope_scaling_long_factor, list)
+            and all(isinstance(x, (int, float)) for x in rope_scaling_long_factor)
+        ):
+            raise ValueError(
+                f"`rope_scaling`'s long_factor field must be a list of numbers, got {rope_scaling_long_factor}"
+            )
+        if not len(rope_scaling_long_factor) == self.hidden_size // self.num_attention_heads // 2:
+            raise ValueError(
+                f"`rope_scaling`'s long_factor field must have length {self.hidden_size // self.num_attention_heads // 2}, got {len(rope_scaling_long_factor)}"
+            )
